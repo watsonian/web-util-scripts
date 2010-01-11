@@ -1,0 +1,300 @@
+#!/usr/bin/env ruby
+
+require 'mysql'
+require 'optparse'
+require 'ostruct'
+
+class DatabaseFinder
+  attr_accessor :application, :locations, :exists_at, :located_at, :regex, :dbname, :dbuser, :dbpass, :dbhost
+  
+  @@supported_applications = [:joomla, :wordpress, :drupal, :phpbb, :gallery, :zencart, :mediawiki]
+  
+  @@app_metadata = {}
+  @@app_metadata[:drupal] = {
+    :locations => ["sites/default/settings.php"],
+    :regex => {
+      :dbname => Regexp.new("^\\$db_url.*?\\/\\/.*?\\/(.*?)'"),
+      :dbuser => Regexp.new("^\\$db_url.*?\\/\\/(.*)?:.*?'"),
+      :dbpass => Regexp.new("^\\$db_url.*?\\/\\/.*?:(.*)?@.*?'"),
+      :dbhost => Regexp.new("^\\$db_url.*?\\/\\/.*?@(.*)?\\/.*?'"),
+    },
+  }
+  @@app_metadata[:gallery] = {
+    :locations => ["config.php"],
+    :regex => {
+      :dbname => Regexp.new("\\$storeConfig\\['database'.*?'(.*?)'"),
+      :dbuser => Regexp.new("\\$storeConfig\\['username'.*?'(.*?)'"),
+      :dbpass => Regexp.new("\\$storeConfig\\['password'.*?'(.*?)'"),
+      :dbhost => Regexp.new("\\$storeConfig\\['hostname'.*?'(.*?)'"),
+    },
+  }
+  @@app_metadata[:joomla] = {
+    :locations => ["configuration.php"],
+    :regex => {
+      :dbname => Regexp.new("\\$db\\s*=\\s*'(.*?)'"),
+      :dbuser => Regexp.new("\\$user\\s*=\\s*'(.*?)'"),
+      :dbpass => Regexp.new("\\$password\\s*=\\s*'(.*?)'"),
+      :dbhost => Regexp.new("\\$host\\s*=\\s*'(.*?)'"),
+    },
+  }
+  @@app_metadata[:mediawiki] = {
+    :locations => ["LocalSettings.php"],
+    :regex => {
+      :dbname => Regexp.new("\\$wgDBname\\s*=\\s*'(.*?)'"),
+      :dbuser => Regexp.new("\\$wgDBuser\\s*=\\s*'(.*?)'"),
+      :dbpass => Regexp.new("\\$wgDBpassword\\s*=\\s*'(.*?)'"),
+      :dbhost => Regexp.new("\\$wgDBserver\\s*=\\s*'(.*?)'"),
+    },
+  }
+  @@app_metadata[:phpbb] = {
+    :locations => ["config.php"],
+    :regex => {
+      :dbname => Regexp.new("dbname\\s*=\\s*'(.*?)'"),
+      :dbuser => Regexp.new("dbuser\\s*=\\s*'(.*?)'"),
+      :dbpass => Regexp.new("dbpasswd\\s*=\\s*'(.*?)'"),
+      :dbhost => Regexp.new("dbhost\\s*=\\s*'(.*?)'"),
+    },
+  }
+  @@app_metadata[:wordpress] = {
+    :locations => ["wp-config.php"],
+    :regex => {
+      :dbname => Regexp.new("DB_NAME'.*?'(.*?)'"),
+      :dbuser => Regexp.new("DB_USER'.*?'(.*?)'"),
+      :dbpass => Regexp.new("DB_PASSWORD'.*?'(.*?)'"),
+      :dbhost => Regexp.new("DB_HOST'.*?'(.*?)'"),
+    },
+  }
+  @@app_metadata[:zencart] = {
+    :locations => ["includes/configure.php"],
+    :regex => {
+      :dbname => Regexp.new("DB_DATABASE'.*?'(.*?)'"),
+      :dbuser => Regexp.new("DB_SERVER_USERNAME'.*?'(.*?)'"),
+      :dbpass => Regexp.new("DB_SERVER_PASSWORD'.*?'(.*?)'"),
+      :dbhost => Regexp.new("DB_SERVER'.*?'(.*?)'"),
+    },
+  }
+  
+  def initialize(app)
+    @exists_at = []
+    @dbname = nil
+    @dbuser = nil
+    @dbpass = nil
+    @dbhost = nil
+    self.application = app
+    self.locations = @@app_metadata[@application][:locations]
+    @regex = @@app_metadata[@application][:regex]
+  end
+  
+  def application=(app)
+    a = String(app).downcase.to_sym
+    if @@supported_applications.include?(a)
+      instance_variable_set(:@application, a)
+    else
+      raise "That application is not supported yet."
+    end
+  end
+  
+  def find_db_info
+    locate_files
+    @exists_at.each do |file|
+      # puts "Searching '#{file}' for db connection info..."
+      File.foreach(file) do |line|
+        @dbname ||= @regex[:dbname].match(line)[1] if @regex[:dbname] === line
+        @dbuser ||= @regex[:dbuser].match(line)[1] if @regex[:dbuser] === line
+        @dbpass ||= @regex[:dbpass].match(line)[1] if @regex[:dbpass] === line
+        @dbhost ||= @regex[:dbhost].match(line)[1] if @regex[:dbhost] === line
+        @located_at = file if @dbname
+      end
+    end
+  end
+  
+  def manual_connection_string
+    "mysql -u #{@dbuser} -p#{@dbpass} -h #{@dbhost} #{@dbname}"
+  end
+  
+  private
+    def locate_files
+      @locations.each do |loc|
+        if File.exists?(loc)
+          @exists_at << loc
+        end
+      end
+    end
+end
+
+
+def fetch_args(args)
+  options = OpenStruct.new
+  options.options_table_only = false
+  options.verbose = false
+  options.show_only = false
+  options.app_type = :wordpress
+  
+  ARGV.options do |opts|
+    opts.banner = "Usage:  #{File.basename($PROGRAM_NAME)} [options]"
+
+    opts.separator " "
+    opts.separator "Specific options:"
+
+    opts.on( "-a", "--all", "Optimize all tables with overhead." ) do
+      options.options_table_only = false
+    end
+
+    opts.on( "-s", "--show-only", "Show wp_options tables with overhead. No optimization is done." ) do
+      options.show_only = true
+    end
+    
+    opts.on( "-S", "--show-all", "Show all tables with overhead. No optimization is done." ) do
+      options.show_only = true
+      options.options_table_only = false
+    end
+
+    opts.on( "-v", "--verbose", "Display more detailed information." ) do
+      options.verbose = true
+    end
+    
+    opts.separator " "
+    opts.separator "Application Types:"
+    
+    opts.on( "--wp", "--wordpress", "Look for WordPress DB connection info.") do
+      options.app_type = :wordpress
+    end
+    
+    opts.on( "--drupal", "Look for Drupal DB connection info." ) do
+      options.app_type = :drupal
+    end
+    
+    opts.on( "--joomla", "Look for Joomla DB connection info." ) do
+      options.app_type = :joomla
+    end
+    
+    opts.on( "--phpbb", "Look for phpBB DB connection info." ) do
+      options.app_type = :phpbb
+    end
+    
+    opts.on( "--gallery", "Look for Gallery DB connection info." ) do
+      options.app_type = :gallery
+    end
+    
+    opts.on( "--zencart", "Look for ZenCart DB connection info." ) do
+      options.app_type = :zencart
+    end
+    
+    opts.on( "--mediawiki", "Look for MediaWiki DB connection info." ) do
+      options.app_type = :mediawiki
+    end
+
+    opts.separator " "
+    opts.separator "Misc:"
+
+    opts.on( "-h", "--help", "Show this message." ) do
+      puts opts
+      exit
+    end
+
+    opts.separator " "
+
+    begin
+      opts.parse(args)
+    rescue OptionParser::InvalidOption => e
+      puts e
+      puts opts
+      exit(1)
+    end
+  end
+  options
+end
+
+def verbose_puts(text)
+  puts " v #{text}"
+end
+
+def verbose(text, verbose)
+  verbose_puts(text) if verbose
+end
+
+def do_query(db, query, verbose)
+  if verbose
+    verbose_puts("EXECUTING: #{query}")
+    output = db.query(query)
+    verbose_puts("#{db.affected_rows} row(s) affected.")
+    return output
+  else
+    return db.query(query)
+  end
+end
+
+def optimize_tables!
+  @@options ||= fetch_args(ARGV)
+  
+  df = DatabaseFinder.new(@@options.app_type)
+  df.find_db_info
+  
+  puts "Connect manually with:"
+  puts "    #{df.manual_connection_string}\n\n"
+  puts "Checking for tables with overhead..."
+  
+  begin
+    verbose("Connecting to 'information_schema' database...", @@options.verbose)
+    db = Mysql::new(df.dbhost, df.dbuser, df.dbpass, "information_schema")
+    
+    if @@options.options_table_only
+      verbose("Checking wp_options tables only...", @@options.verbose)
+      query = "select TABLE_NAME, DATA_FREE from TABLES where TABLE_SCHEMA = '#{df.dbname}' and DATA_FREE > 0 and TABLE_NAME like '%_options';"
+      rows = do_query(db, query, @@options.verbose)
+    else
+      verbose("Checking all tables...", @@options.verbose)
+      query = "select TABLE_NAME, DATA_FREE from TABLES where TABLE_SCHEMA = '#{df.dbname}' and DATA_FREE > 0 order by DATA_FREE desc;"
+      rows = do_query(db, query, @@options.verbose)
+    end
+    
+    if db.affected_rows == 0
+      puts "    No table overhead was found."
+    else
+      tables = []
+      output = []
+      maxlen = rows.fetch_field.max_length
+      rows.each do |table, overhead|
+        tables << table
+        output << "#{hr(table, maxlen+4)} >> #{hr(overhead.to_i)}" + (@@options.show_only ? "" : " ... optimized!")
+      end
+      
+      unless @@options.show_only
+        query = "optimize table `#{tables.join("`, `")}`;"
+      
+        verbose("Switching to use '#{df.dbname}' database...", @@options.verbose)
+        db.select_db(df.dbname)
+        do_query(db, query, @@options.verbose)
+      end
+      
+      output.each { |s| puts s }
+    end
+  rescue Mysql::Error => e
+    puts "        Error code: #{e.errno}"
+    puts "     Error message: #{e.error}"
+    puts "    Error SQLSTATE: #{e.sqlstate}" if e.respond_to?("sqlstate")
+  ensure
+    verbose("Closing database connection...", @@options.verbose)
+    db.close if db
+  end
+end
+
+def extract_value(line)
+  line.split("'").at(3)
+end
+
+def hr(val, maxlen = nil)
+  case val
+  when Fixnum
+    kb = val.to_f/1024.0
+    return "%.0fB" % bytes = (kb*1024).to_i if kb < 1
+    return "%.1fM" % mb = kb/1024.0 if kb > 1024
+    return "%.0fK" % kb
+  when String
+    return "%#{maxlen||0}s" % val
+  else
+    "doh!"
+  end
+end
+
+optimize_tables!

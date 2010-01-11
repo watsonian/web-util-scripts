@@ -1,0 +1,208 @@
+#!/usr/bin/env ruby
+
+require 'optparse'
+require 'ostruct'
+
+class ApacheLogParser
+  def self.parse(filename, rules={}, &block)
+    rules = process_rules(rules)
+    parse_file(filename, rules, &block)
+  end
+  
+  private
+    def self.parse_line(line)
+      m = line.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}).*?(([0-9]{1,2})\/(.*?)\/([0-9]{4})):(([0-9]{2}):[0-9]{2}:[0-9]{2})\s*(.*?)\]\s*"([\w]*)\s(.*?)\s.*?"\s([0-9]{3})\s(.*?)\s*"(.*?)"\s*"(.*?)"/)
+      if m
+      {:ip         => m[1],
+       :date       => m[2],
+       :day        => m[3].to_i,
+       :month      => m[4],
+       :year       => m[5].to_i,
+       :time       => m[6],
+       :hour       => m[7].to_i,
+       :zone       => m[8],
+       :method     => m[9],
+       :resource   => m[10],
+       :status     => m[11].to_i,
+       :size       => m[12],
+       :referer    => m[13],
+       :user_agent => m[14]}
+      else
+        {}
+      end
+    end
+  
+    def self.parse_file(filename, rules={}, &block)
+      File.foreach(filename) do |line|
+        parsed = parse_line(line)
+        if rules.any?
+          # stop parsing the file if we're past the designated hour range
+          break if rules[:hour] && Array(parsed[:hour]).last > Array(rules[:hour]).last
+          
+          # go to the next line if there are any rules that are not matched by this line
+          next if rules.reject{|k,v| Array(v).include?(parsed[k]) }.any?
+        end
+        yield parsed
+      end
+    end
+
+    def self.process_rules(rules)
+      #default_options = {:date => Time.now.strftime("#{"%02d" % rules[:day] || "%d"}/%h/%Y")}
+      #rules = default_options.merge(rules)
+      if rules[:date]
+        rules[:day], rules[:month], rules[:year] = rules[:date].split("/")
+        rules[:day] = rules[:day].to_i
+        rules[:year] = rules[:year].to_i
+      end
+      rules
+    end
+end
+
+
+class CLIGraph
+  def self.draw(dataset, title, options={})
+    options = {:all => true}.merge(options)
+    max = dataset.values.max || 0
+    normalized_dataset = normalize_data(dataset, max)
+    
+    header(title)
+    first, last = options[:all] ? [0, 23] : [dataset.keys.sort.first, dataset.keys.sort.last]
+    
+    first.upto(last) do |n|
+      hour = "%02d" % n
+      format = "%#{dataset.values.max.to_s.length}d"
+      draw_line(hour, dataset[n]||0, normalized_dataset[n], format)
+    end
+  end
+  
+  private
+    def self.header(text)
+      puts "\n"
+      puts text.upcase
+      puts "-"*100
+    end
+    
+    def self.draw_line(label, data, length, data_format = nil)
+      formatted_data = (data_format % data if data_format) || data
+      puts "#{label} | #{formatted_data} | #{line(length)}"
+    end
+    
+    def self.line(num)
+      "="*(num||0) + ">"
+    end
+    
+    def self.normalize_data(data, max)
+      normalized_data = {}
+      if max > 100
+        divisor = max.to_f / 100.0
+        data.each do |k, v|
+          normalized_data[k.to_i] = (v.to_f / divisor).floor
+        end
+      else
+        multiplier = 100.0 / max.to_f
+        data.each do |k, v|
+          normalized_data[k.to_i] = (v.to_f * multiplier).floor
+        end
+      end
+      normalized_data
+    end
+end
+
+
+
+#
+# Script Begins Here
+#
+
+options = OpenStruct.new
+options.verbose = false
+options.domain = ""
+options.logfile = "access.log"
+options.full_path = nil
+options.full_graph = true
+rules = {}
+
+ARGV.options do |opts|
+  opts.banner = "Usage:  #{File.basename($PROGRAM_NAME)} [options] DOMAIN"
+
+  opts.separator " "
+  opts.separator "Log location options:"
+  
+  opts.on( "-l", "--logfile=FILE", String, "Specify the log file name." ) do |opt|
+    options.logfile = opt
+  end
+  
+  opts.on( "-L", "--fullpath=FILE", String, "Specify the full path to the log file." ) do |opt|
+    options.full_path = opt
+  end
+  
+  opts.separator " "
+  opts.separator "Date range options:"
+  
+  opts.on( "--date=DATE", String, "Specify the date to check for (e.g., 23/Dec/2009)." ) do |opt|
+    rules[:date] = opt
+  end
+  
+  opts.on( "--hour=HOUR", String, "Specify the hour or hour range to check for (e.g., 6 or 6..9)." ) do |opt|
+    hour = opt.split("..")
+    rules[:hour] = hour.length > 1 ? hour.first.to_i..hour.last.to_i : hour.first.to_i
+    options.full_graph = false
+  end
+  
+  opts.on( "--day=DAY", String, "Specify the day to check for (e.g., 6 or 23)." ) do |opt|
+    rules[:day] = opt.to_i
+  end
+  
+  opts.separator " "
+  opts.separator "Request type options:"
+  
+  METHODS = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "TRACE", "CONNECT"]
+  opts.on( "--method=METHOD", METHODS, "Specify the method type to check for (e.g., GET, POST, PUT, etc)." ) do |opt|
+    rules[:method] = opt
+  end
+  
+  opts.on( "--status=STATUS", String, "Specify the request status code to check for (e.g., 200, 404, or 500)." ) do |opt|
+    rules[:status] = opt.to_i
+  end
+  
+  opts.separator " "
+  opts.separator "Misc:"
+  
+  opts.on( "-h", "--help", "Show this message." ) do
+    puts opts
+    exit
+  end
+  
+  opts.on( "-v", "--verbose", "Display more detailed information. (not yet implemented)" ) do
+    options.verbose = true
+  end
+
+  opts.separator " "
+
+  begin
+    opts.parse!(ARGV)
+    if ARGV.empty?
+      puts opts
+      exit(1)
+    else
+      options.domain = ARGV.first
+    end
+  rescue OptionParser::InvalidOption, OptionParser::InvalidArgument, OptionParser::MissingArgument => e
+    puts e
+    puts opts
+    exit(1)
+  end
+end
+
+logfile = options.full_path || "#{File.dirname(File.expand_path(__FILE__))}/logs/#{options.domain}/http/#{options.logfile}"
+hits_by_hour = {}
+if File.exists?(logfile)
+  ApacheLogParser.parse(logfile, rules) do |parsed|
+    hits_by_hour[parsed[:hour]] ||= 0
+    hits_by_hour[parsed[:hour]] += 1
+  end
+  
+  CLIGraph.draw(hits_by_hour, "requests per hour for #{options.domain}", :all => options.full_graph)
+else
+  puts "#{logfile} does not exist."
+end
