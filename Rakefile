@@ -11,6 +11,7 @@ begin
     gem.homepage = "http://github.com/watsonian/web-util-scripts"
     gem.authors = ["watsonian"]
     gem.add_dependency "database_sleuth", ">= 1.0.0"
+    gem.add_dependency "apache_log_parser", ">= 1.0.0"
     gem.add_development_dependency "rspec", ">= 1.2.9"
     # gem is a Gem::Specification... see http://www.rubygems.org/read/chapter/20 for additional settings
   end

@@ -1,8 +1,9 @@
 #!/usr/bin/env ruby
 
+require 'rubygems'
 require 'optparse'
 require 'ostruct'
-require '../lib/apache_log_parser'
+require 'apache_log_parser'
 
 class CLIGraph
   def self.draw(dataset, title, options={})
